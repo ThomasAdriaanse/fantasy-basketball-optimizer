@@ -836,11 +836,12 @@ class HAgent:
         self.players = my_players
 
         # Position-optimiser throttle schedule for this run. Draft uses the 'tiered' schedule; auction
-        # defaults to 'exact' (dollar values anchor on the whole-distribution replacement level, so
-        # they're sensitive to the approximated tail). _position_mode_override lets benchmarks/tests
-        # force a specific schedule: 'exact' | 'tiered' | 'light'.
+        # uses 'light' (top 300 re-solved every iteration, everyone every 5th), which keeps the
+        # replacement-level dollar anchor exactly solved; test_throttle_impact.py bounds the drift
+        # against 'exact'. _position_mode_override lets benchmarks/tests force a specific schedule:
+        # 'exact' | 'tiered' | 'light'.
         self._position_mode = getattr(self, '_position_mode_override', None) or (
-            'exact' if cash_remaining_per_team is not None else 'tiered'
+            'light' if cash_remaining_per_team is not None else 'tiered'
         )
 
         n_players_selected = len(my_players)
