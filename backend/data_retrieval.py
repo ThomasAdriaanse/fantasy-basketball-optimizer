@@ -267,41 +267,31 @@ def derive_missing_ratio_columns(
 # ── Projection data ───────────────────────────────────────────────────────────
 
 def get_espn_projections(sport_params: dict) -> pd.DataFrame:
-    """Fetch ESPN projections from Snowflake, with 'player_id' resolved from ESPN names."""
-    n_games = sport_params['n_games']
-    df = query('ESPN_PROJECTION_VIEW')
-    df = df.rename(columns=sport_params['espn-renamer'])
-    df = attach_player_ids_by_name(df)      # resolve the raw ESPN spellings
-    df = _map_player_names(df, 'ESPN_NAME')  # display names stay master-mapped as today
-    df['Games Played %'] = df['Games Played'] / n_games
-    return df
+    """Fetch ESPN projections from the database.
+
+    Currently unavailable as ESPN projections have not been scraped into the database yet.
+    """
+    raise RuntimeError(
+        'ESPN projections are not available yet because they have not been scraped into the database.'
+    )
 
 
 def get_darko_data(sport_params: dict) -> pd.DataFrame:
-    """Fetch DARKO projections from Snowflake, scaled from per-100 to per-game.
-    DARKO carries NBA_PLAYER_ID natively; position/minutes ride in from the ESPN table
-    joined by id (its names resolved through the unified table)."""
+    """Fetch DARKO projections from the database, scaled from per-100 to per-game.
+
+    DARKO carries NBA_PLAYER_ID natively; minutes, games played, and positions are
+    derived from darko_projections and nba_players in DARKO_VIEW.
+    """
     n_games = sport_params['n_games']
 
     df = query('DARKO_VIEW')
     df = df.rename(columns=sport_params['darko-renamer'])
+    df = df.rename(columns={'MINUTES': 'Minutes', 'GAMES_PLAYED': 'Games Played', 'POSITION': 'Position'})
     df = df.apply(pd.to_numeric, errors='ignore')
     df = _map_player_names(df, 'DARKO_NAME')
     df['player_id'] = df['NBA_PLAYER_ID'].astype('Int64')
     df = df.drop(columns=['NBA_PLAYER_ID']).sort_values('Player').fillna(0)
 
-    # Position / minutes / games come from ESPN, joined by resolved id.
-    # The VIEW, not the table: the table keeps every load ever made, and the view is the one that
-    # narrows to the most recent. They were the same thing for as long as the table held a single
-    # load, which is why reading the table worked until a second one landed -- at which point every
-    # player carried in both loads resolved two rows here and the merge below multiplied him.
-    extra = query('ESPN_PROJECTION_VIEW')[['ESPN_NAME', 'MINUTES_PLAYED', 'GAMES_PLAYED', 'POSITION']]
-    extra.columns = ['Player', 'Minutes', 'Games Played %', 'Position']
-    extra['Games Played %'] = extra['Games Played %'].astype(float) / n_games
-    extra = attach_player_ids_by_name(extra).dropna(subset=['player_id'])
-    extra = extra.drop(columns=['Player'])
-
-    df = df.merge(extra, on='player_id')
     possessions_per_game = df['Pace'] / 100 * df['Minutes'] / 48
 
     per_100_cols = {
@@ -323,6 +313,7 @@ def get_darko_data(sport_params: dict) -> pd.DataFrame:
         df['Field Goal Attempts/100'] * df['Field Goal %'] * possessions_per_game
     )
     df['Assist to TO'] = df['Assists'] / df['Turnovers']
+    df['Games Played %'] = df['Games Played'].astype(float) / n_games
 
     required = (
         sport_params['counting-statistics']

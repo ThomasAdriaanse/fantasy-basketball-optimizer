@@ -56,7 +56,8 @@ def query(view_name: str) -> pd.DataFrame:
                 _cache[cache_key] = (time.time() - age, df)
             return df.copy()
 
-    df = run_query(f'SELECT * FROM {view_name}')
+    qualified_name = view_name if '.' in view_name else f'fbbo.{view_name}'
+    df = run_query(f'SELECT * FROM {qualified_name}')
 
     if disk_path is not None:
         disk_path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,6 +109,7 @@ def _get_engine() -> Engine:
                 )
             _engine = sa.create_engine(
                 db_url,
+                connect_args={'options': '-csearch_path=fbbo,public'},
                 pool_pre_ping=True,
                 pool_recycle=3600,
                 pool_size=5,
@@ -125,6 +127,7 @@ def run_query(sql: str) -> pd.DataFrame:
     engine = _get_engine()
     try:
         with engine.connect() as conn:
+            conn.execute(sa.text('SET search_path TO fbbo, public'))
             df = pd.read_sql(sql, conn)
     except Exception as exc:
         logger.error('Database query failed for SQL: %s. Error: %s', sql, exc)
