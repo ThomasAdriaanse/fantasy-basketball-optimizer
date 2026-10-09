@@ -289,6 +289,41 @@ export async function evaluate(
     })
 }
 
+// ── POST /sessions/{id}/auction-autodraft ─────────────────────────────────────
+
+export interface AuctionAutodraftResult {
+    nominated_player_id: number
+    nominated_player_name: string
+    opening_bid: number
+    bids: Record<string, number>
+    valuations: Record<string, number>
+    winner_id: string
+    winning_price: number
+    bid_history?: Array<{ team: string; bid: number; action?: string }>
+}
+
+
+/** Resolves an auction nomination and second-price auction bidding via the backend. */
+export async function auctionAutodraft(
+    sessionId: string
+    , req: {
+        player_assignments: Record<string, number[]>
+        remaining_cash: Record<string, number>
+        nominator_id: string
+        nominated_player_id?: number | null
+        autodrafter_team_ids: string[]
+        manual_bids?: Record<string, number>
+    }
+    , signal?: AbortSignal
+): Promise<AuctionAutodraftResult> {
+    return jsonRequest(`${BASE_URL}/sessions/${sessionId}/auction-autodraft`, 'Auction autodraft', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(req),
+        signal,
+    })
+}
+
 // ── POST /sessions/{id}/trade/analyze ────────────────────────────────────────
 
 export interface TeamHScore {

@@ -19,3 +19,15 @@ export function getDrafterMethod(index: number): DrafterMethod {
 export function setDrafterMethod(index: number, method: DrafterMethod): void {
     savePref(`drafter_mode_${index}`, method)
 }
+
+/** Auction drafter method: user seat (defaults to index 0) defaults to 'Manual input'; all other teams default to 'H-scoring'. */
+export function getAuctionDrafterMethod(index: number, userSeatIndex: number = 0): DrafterMethod {
+    const defaultMethod = index === userSeatIndex ? 'Manual input' : 'H-scoring'
+    return pref(`auction_drafter_mode_${index}`, defaultMethod) === 'Manual input' ? 'Manual input' : 'H-scoring'
+}
+
+/** Persists an auction drafter's method. */
+export function setAuctionDrafterMethod(index: number, method: DrafterMethod): void {
+    savePref(`auction_drafter_mode_${index}`, method)
+}
+

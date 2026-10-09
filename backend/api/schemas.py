@@ -5,7 +5,7 @@ in backend.models (this module imports from it, never the reverse).
 """
 
 from __future__ import annotations
-from typing import Optional
+from typing import Optional, Any
 from pydantic import BaseModel, Field, model_validator
 
 from backend.models import ComboParam
@@ -208,6 +208,29 @@ class EvaluateRequest(BaseModel):
     # allow_force_weighting on, so the toggle alone governs the feature and the typed boxes survive
     # being toggled off and back on.
     forced_category_weights: Optional[dict[str, Optional[float]]] = None
+
+
+# ── /sessions/{id}/auction-autodraft ──────────────────────────────────────────
+
+class AuctionAutodraftRequest(BaseModel):
+    player_assignments: dict[str, list[int]]
+    remaining_cash: dict[str, float]
+    nominator_id: str
+    nominated_player_id: Optional[int] = None
+    autodrafter_team_ids: list[str] = Field(default_factory=list)
+    manual_bids: dict[str, float] = Field(default_factory=dict)
+
+
+class AuctionAutodraftResponse(BaseModel):
+    nominated_player_id: int
+    nominated_player_name: str
+    opening_bid: float
+    bids: dict[str, float]
+    valuations: dict[str, float]
+    winner_id: str
+    winning_price: float
+    bid_history: Optional[list[dict[str, Any]]] = None
+
 
 
 # ── /sessions/{id}/trade/analyze ─────────────────────────────────────────────
