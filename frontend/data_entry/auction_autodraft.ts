@@ -181,7 +181,7 @@ function buildPendingNomination(
         if (maxAllowedBids[drafterIndex] >= result.opening_bid) activeBidders.add(drafterIndex)
     }
     activeBidders.add(nominatorIndex)
-    return {
+    const nomination: PendingNomination = {
         playerId:        result.nominated_player_id,
         playerName:      result.nominated_player_name,
         nominatorIndex,
@@ -194,6 +194,50 @@ function buildPendingNomination(
         bidHistory:      [{ team: readTeamIdentity(nominatorIndex), bid: result.opening_bid, action: 'nominate' }],
         lastBids:        { [nominatorIndex]: result.opening_bid },
     }
+    settleAutodrafterBidding(nomination)
+    return nomination
+}
+
+/**
+ * Plays out the bidding among the autodrafters alone, in the usual turn order and $1 steps, with manual
+ * drafters sitting out (not passing), then hands the turn to the seat after the high bidder.
+ *
+ * Without this, a manual drafter is prompted on every round from the $1 opening, although no manual bid
+ * below the price the autodrafters reach on their own can win: the autodrafter that values the player
+ * most would outbid it. The autodrafters' result is the same as in full $1 bidding (the second-highest
+ * autodrafter limit, or $1 above it, held by the highest), so manual drafters now first act at that price
+ * and can bid it up from there. With no manual drafter in the nomination it decides the whole auction.
+ */
+function settleAutodrafterBidding(nomination: PendingNomination): void {
+    const nDrafters = getNDrafters()
+    let turnsWithoutRaise = 0
+    while (turnsWithoutRaise < nDrafters) {
+        const drafterIndex = nomination.turnIndex
+        nomination.turnIndex = (drafterIndex + 1) % nDrafters
+        turnsWithoutRaise += 1
+
+        const isSettling = nomination.activeBidders.has(drafterIndex)
+            && drafterIndex !== nomination.highBidderIndex
+            && isAuctionAutodrafter(drafterIndex)
+            // A team switched to autodraft while this nomination was being requested has no valuation yet;
+            // the regular bidding fetches it when its turn comes.
+            && readTeamIdentity(drafterIndex) in nomination.valuations
+        if (!isSettling) continue
+
+        const team = readTeamIdentity(drafterIndex)
+        const nextBid = nomination.currentBid + 1
+        if (nextBid <= nomination.valuations[team] && nextBid <= nomination.maxAllowedBids[drafterIndex]) {
+            nomination.currentBid = nextBid
+            nomination.highBidderIndex = drafterIndex
+            nomination.lastBids[drafterIndex] = nextBid
+            nomination.bidHistory.push({ team, bid: nextBid, action: 'raise' })
+            turnsWithoutRaise = 0
+        } else {
+            nomination.activeBidders.delete(drafterIndex)
+            nomination.bidHistory.push({ team, bid: nomination.currentBid, action: 'pass' })
+        }
+    }
+    nomination.turnIndex = (nomination.highBidderIndex + 1) % nDrafters
 }
 
 /**

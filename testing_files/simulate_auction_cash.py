@@ -9,8 +9,10 @@ The bidding loop below MIRRORS advanceAutobidders in frontend/data_entry/auction
 nomination rotation MIRRORS advanceNominatorIndex in frontend/data_entry/auction_state.ts: nominations
 rotate in board order skipping full teams; bidding opens at $1; teams take turns in board order from the
 nominator's left, each raising by $1 while the next bid is within both its valuation and its maximum
-allowable bid, otherwise passing for good; the turn returning to the high bidder ends it. Change these
-together with the browser code.
+allowable bid, otherwise passing for good; the turn returning to the high bidder ends it. (The browser
+settles the autodrafters' bidding first, in settleAutodrafterBidding, so manual drafters join at that price;
+with every team an autodrafter, as here, that is the whole auction and the result is identical.) Change
+these together with the browser code.
 
 Run from the repository root, with the project's environment (it reads the player data from the
 database the app uses):
