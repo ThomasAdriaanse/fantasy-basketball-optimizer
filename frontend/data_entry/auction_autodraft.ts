@@ -6,7 +6,7 @@
 // This module never renders. It announces every state change with AUCTION_AUTODRAFT_CHANGED on
 // document, and the auction board re-renders on it.
 
-import { getSessionId, setAutopilotOn, setAutopilotOff } from '../api/session.js'
+import { getSessionId, setAutopilotOn, setAutopilotOff, withSessionRetry } from '../api/session.js'
 import { nominateAuctionPlayer, valueAuctionPlayer, AuctionNominationResult, HTTPError, readErrorDetail } from '../api/client.js'
 import { getCurrentSeat } from '../app_state.js'
 import { getAuctionDrafterMethod } from './drafter_methods.js'
@@ -145,6 +145,8 @@ function reportAutodraftError(error: unknown): void {
     notifyAuctionAutodraftChanged()
 }
 
+/** The open session's id. Called inside withSessionRetry, which has just ensured one exists (and replaces
+ *  an expired one, e.g. after a backend restart, on a 404). */
 function requireSessionId(): string {
     const sessionId = getSessionId()
     if (!sessionId) throw new Error('No session is open, so the auction cannot reach the backend.')
@@ -267,11 +269,11 @@ async function fetchMissingValuations(nomination: PendingNomination): Promise<vo
     missingTeams.forEach(team => valuationRequestsInFlight.add(team))
     const generation = boardGeneration
     try {
-        const valuations = await valueAuctionPlayer(requireSessionId(), {
+        const valuations = await withSessionRetry(() => valueAuctionPlayer(requireSessionId(), {
             ...getAuctionState(),
             player_id:          nomination.playerId,
             valuation_team_ids: missingTeams,
-        })
+        }))
         if (generation !== boardGeneration || pendingNomination !== nomination) return
         Object.assign(nomination.valuations, valuations)
         continueNomination(nomination)
@@ -301,18 +303,17 @@ async function runAuctionAutopilot(): Promise<void> {
     notifyAuctionAutodraftChanged()
 
     try {
-        const sessionId = requireSessionId()
         while (!isAuctionComplete() && !autopilotCancelRequested) {
             const nominatorIndex = getNominatorIndex()
             if (!isAuctionAutodrafter(nominatorIndex)) break
 
-            const result = await nominateAuctionPlayer(sessionId, {
+            const result = await withSessionRetry(() => nominateAuctionPlayer(requireSessionId(), {
                 ...getAuctionState(),
                 nominator_id:        readTeamIdentity(nominatorIndex),
                 nominated_player_id: null,
                 opening_bid:         null,
                 valuation_team_ids:  listAutodrafterTeamIds(),
-            }, signal)
+            }, signal))
             if (autopilotCancelRequested || generation !== boardGeneration) break
             // The nominator was switched to manual while its nomination was in flight: it no longer nominates.
             if (!isAuctionAutodrafter(nominatorIndex)) break
@@ -407,13 +408,13 @@ export async function nominateManually(
         nominationRequestInFlight = true
         notifyAuctionAutodraftChanged()
         const generation = boardGeneration
-        const result = await nominateAuctionPlayer(requireSessionId(), {
+        const result = await withSessionRetry(() => nominateAuctionPlayer(requireSessionId(), {
             ...getAuctionState(),
             nominator_id:        readTeamIdentity(nominatorIndex),
             nominated_player_id: playerId,
             opening_bid:         openingBid,
             valuation_team_ids:  listAutodrafterTeamIds(),
-        })
+        }))
         nominationRequestInFlight = false
         if (generation !== boardGeneration) return
         continueNomination(buildPendingNomination(result, nominatorIndex))
