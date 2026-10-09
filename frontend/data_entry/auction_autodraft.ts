@@ -41,6 +41,9 @@ type BiddingOutcome = 'complete' | 'manual-turn' | 'awaiting-valuation'
 
 let autopilotRunning = false
 let autopilotCancelRequested = false
+// Aborts the autopilot's in-flight nomination request, so Stop takes effect at once rather than after the
+// request's evaluates finish. The backend still completes that request; its result is discarded.
+let autopilotAbortController: AbortController | null = null
 // Set by Stop, or by a failure: either blocks the automatic restart that every board render would
 // otherwise trigger, until the user continues.
 let autopilotStopped = false
@@ -87,7 +90,12 @@ export function resetAuctionAutodraft(): void {
     pendingNomination = null
     autodraftErrorMessage = null
     autopilotStopped = false
-    if (autopilotRunning) autopilotCancelRequested = true
+    if (autopilotRunning) cancelAutopilotRun()
+}
+
+function cancelAutopilotRun(): void {
+    autopilotCancelRequested = true
+    autopilotAbortController?.abort()
 }
 
 /** Takes the player up for bid off the block without awarding him. When an autodrafter nominated him, the
@@ -99,8 +107,8 @@ export function cancelPendingNomination(): void {
 }
 
 export function stopAuctionAutopilot(): void {
-    autopilotCancelRequested = true
     autopilotStopped = true
+    cancelAutopilotRun()
     notifyAuctionAutodraftChanged()
 }
 
@@ -283,6 +291,8 @@ async function runAuctionAutopilot(): Promise<void> {
     if (autopilotRunning) return
     autopilotRunning = true
     autopilotCancelRequested = false
+    autopilotAbortController = new AbortController()
+    const signal = autopilotAbortController.signal
     const generation = boardGeneration
     setAutopilotOn()
     notifyAuctionAutodraftChanged()
@@ -299,7 +309,7 @@ async function runAuctionAutopilot(): Promise<void> {
                 nominated_player_id: null,
                 opening_bid:         null,
                 valuation_team_ids:  listAutodrafterTeamIds(),
-            })
+            }, signal)
             if (autopilotCancelRequested || generation !== boardGeneration) break
             // The nominator was switched to manual while its nomination was in flight: it no longer nominates.
             if (!isAuctionAutodrafter(nominatorIndex)) break
@@ -315,10 +325,14 @@ async function runAuctionAutopilot(): Promise<void> {
             notifyAuctionAutodraftChanged()
         }
     } catch (error) {
-        autopilotStopped = true
-        reportAutodraftError(error)
+        // An abort is Stop (or a board reset) cutting the request short, not a failure.
+        if (!signal.aborted) {
+            autopilotStopped = true
+            reportAutodraftError(error)
+        }
     } finally {
         autopilotRunning = false
+        autopilotAbortController = null
         setAutopilotOff()
         notifyAuctionAutodraftChanged()
     }

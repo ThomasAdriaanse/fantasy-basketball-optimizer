@@ -314,11 +314,13 @@ export async function nominateAuctionPlayer(
         opening_bid:         number | null
         valuation_team_ids:  string[]
     }
+    , signal?: AbortSignal
 ): Promise<AuctionNominationResult> {
     return jsonRequest(`${BASE_URL}/sessions/${sessionId}/auction-autodraft/nominate`, 'Auction nomination', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(request),
+        signal,
     })
 }
 
