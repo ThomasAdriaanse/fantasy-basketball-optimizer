@@ -197,9 +197,10 @@ function buildPendingNomination(
 /**
  * Advances the nomination through consecutive autodrafters in set order. An autodrafter raises by $1 when
  * the next bid is within both its valuation and its maximum allowable bid; otherwise it passes and drops
- * out for this player. Stops when the turn returns to the high bidder or one bidder is left ('complete'),
- * when a manual drafter must act ('manual-turn'), or when an autodrafter has no valuation yet because it
- * was switched on mid-nomination ('awaiting-valuation').
+ * out for this player. A manual drafter whose maximum allowable bid is below the next bid has no bid to
+ * make, so it passes the same way instead of being prompted. Stops when the turn returns to the high bidder
+ * or one bidder is left ('complete'), when a manual drafter must act ('manual-turn'), or when an autodrafter
+ * has no valuation yet because it was switched on mid-nomination ('awaiting-valuation').
  */
 function advanceAutobidders(nomination: PendingNomination): BiddingOutcome {
     const nDrafters = getNDrafters()
@@ -212,13 +213,15 @@ function advanceAutobidders(nomination: PendingNomination): BiddingOutcome {
             continue
         }
         if (drafterIndex === nomination.highBidderIndex) return 'complete'
-        if (!isAuctionAutodrafter(drafterIndex)) return 'manual-turn'
 
         const team = readTeamIdentity(drafterIndex)
-        if (!(team in nomination.valuations)) return 'awaiting-valuation'
-
         const nextBid = nomination.currentBid + 1
-        if (nextBid <= nomination.valuations[team] && nextBid <= nomination.maxAllowedBids[drafterIndex]) {
+        const canAffordNextBid = nextBid <= nomination.maxAllowedBids[drafterIndex]
+        if (!isAuctionAutodrafter(drafterIndex) && canAffordNextBid) return 'manual-turn'
+        if (isAuctionAutodrafter(drafterIndex) && !(team in nomination.valuations)) return 'awaiting-valuation'
+
+        const isAutodrafterRaise = isAuctionAutodrafter(drafterIndex) && nextBid <= nomination.valuations[team]
+        if (canAffordNextBid && isAutodrafterRaise) {
             nomination.currentBid = nextBid
             nomination.highBidderIndex = drafterIndex
             nomination.lastBids[drafterIndex] = nextBid
