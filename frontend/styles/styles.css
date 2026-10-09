@@ -1783,6 +1783,20 @@ tr {
     font-weight: 600;
 }
 
+/* Auction autodraft stopped, or failed: the reason and a Continue button, above the pick control. */
+.auction-autodraft-halt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+    font-size: 0.85rem;
+    color: light-dark(#555555, #aaaaaa);
+}
+
+.auction-autodraft-halt.is-error {
+    color: #e06c6c;
+}
+
 /* Mobile pick-control-row layout. Mode-specific grid templates are defined
    below via :has() — auction uses a 3-column grid with a fixed 5rem Cost
    track, draft uses a single-column grid. Lives AFTER the base

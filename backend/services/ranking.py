@@ -7,9 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from typing import Optional, Any
-
-from scipy.stats import norm
+from typing import Optional
 
 from backend.state.session import Session
 from backend.models import (
@@ -73,29 +71,6 @@ def rank_candidates(
     Returns:
         EvaluateResponse containing the iteration count and ranked Candidate list.
     """
-    res, _ = _rank_candidates_core(
-        session=session,
-        player_assignments=player_assignments,
-        my_team_id=my_team_id,
-        exclusion_list=exclusion_list,
-        remaining_cash=remaining_cash,
-        candidate_offset=candidate_offset,
-        candidate_limit=candidate_limit,
-        forced_category_weights=forced_category_weights,
-    )
-    return res
-
-
-def _rank_candidates_core(
-    session: Session,
-    player_assignments: dict[str, list[int]],
-    my_team_id: str,
-    exclusion_list: list[int],
-    remaining_cash: Optional[dict[str, float]],
-    candidate_offset: int = 0,
-    candidate_limit: Optional[int] = None,
-    forced_category_weights: Optional[dict[str, Optional[float]]] = None,
-) -> tuple[EvaluateResponse, Optional[pd.Series]]:
     # A rostered player the league's categories cannot score is replacement level, not an error.
     player_assignments = count_unscorable_players_as_replacement(session, player_assignments)
     info           = session.agent.info
@@ -151,7 +126,7 @@ def _rank_candidates_core(
         total_candidates = len(available_ranked)   # falls back to the scored count below when not batching
         if len(candidate_subset) == 0:
             return EvaluateResponse(iteration=0, candidates=[], has_more=False,
-                                    total_candidates=total_candidates), None
+                                    total_candidates=total_candidates)
     else:
         candidate_subset = None
         has_more         = False
@@ -182,7 +157,7 @@ def _rank_candidates_core(
     actual_iterations = max(1, n_iterations)
 
     if h_score_result is None:
-        return EvaluateResponse(iteration=0, candidates=[]), None
+        return EvaluateResponse(iteration=0, candidates=[])
 
     with record_phase('build_candidates'):
         candidates = _build_candidates(
@@ -192,13 +167,12 @@ def _rank_candidates_core(
             generic_h_scores=session.agent.default_h_scores,
         )
 
-    scores_series = h_score_result.get('Scores') if isinstance(h_score_result, dict) else None
     return EvaluateResponse(
         iteration        = actual_iterations,
         candidates       = candidates,
         has_more         = has_more,
         total_candidates = total_candidates if total_candidates is not None else len(candidates),
-    ), scores_series
+    )
 
 
 # ── Build candidate list ──────────────────────────────────────────────────────
@@ -872,218 +846,6 @@ def _make_slot_names(position_config: PositionConfig) -> list[str]:
         for position_code, block in position_config.position_ranges.items()
         for i in range(block['end'] - block['start'])
     ]
-
-
-
-def resolve_auction_nomination(
-    session: Session,
-    player_assignments: dict[str, list[int]],
-    remaining_cash: dict[str, float],
-    nominator_id: str,
-    nominated_player_id: Optional[int],
-    autodrafter_team_ids: list[str],
-    manual_bids: dict[str, float],
-) -> tuple[int, str, float, dict[str, float], dict[str, float], str, float, list[dict[str, Any]]]:
-    """Resolve an auction nomination and ascending round-robin auction bidding.
-
-    1. If nominated_player_id is None, nominator selects their top candidate via evaluate.
-    2. Starting bid is set: for an autodrafter nominator, 50% of their valuation, at least $10
-       under valuation, and at least $1 (capped at max allowable bid).
-    3. Drafters take turns in set order bidding $1 more if it results in a valuable bid for them
-       (bid <= valuation and bid <= max allowable bid).
-    4. Bidding stops when everyone passes and turn returns to the current high bidder.
-
-    Returns:
-        (nominated_player_id, nominated_player_name, opening_bid, bids, valuations, winner_id, winning_price, bid_history)
-    """
-    if nominator_id not in player_assignments:
-        raise UnknownTeamError(
-            f'Nominator {nominator_id!r} is not on the board: {list(player_assignments.keys())}'
-        )
-
-    total_roster_picks = session.current_settings['n_picks']
-    n_active = session.agent.n_picks
-    all_rostered = {p for roster in player_assignments.values() for p in roster}
-
-    eval_cache: dict[str, tuple[EvaluateResponse, Optional[pd.Series]]] = {}
-
-    def get_team_eval(team: str) -> tuple[EvaluateResponse, Optional[pd.Series]]:
-        if team not in eval_cache:
-            eval_cache[team] = _rank_candidates_core(
-                session=session,
-                player_assignments=player_assignments,
-                my_team_id=team,
-                exclusion_list=[],
-                remaining_cash=remaining_cash,
-            )
-        return eval_cache[team]
-
-    nominator_valuation: Optional[float] = None
-
-    if nominated_player_id is None:
-        if len(player_assignments[nominator_id]) >= total_roster_picks:
-            raise ValueError(f'Nominator {nominator_id} already has a full roster ({total_roster_picks} picks).')
-        available_cands = []
-        if len(player_assignments[nominator_id]) < n_active:
-            nom_res, _ = get_team_eval(nominator_id)
-            available_cands = [
-                c for c in nom_res.candidates
-                if c.player_id not in all_rostered and c.player_id != FULL_ROSTER_SCORE_PLAYER_ID
-            ]
-        if available_cands:
-            top_cand = available_cands[0]
-            nominated_player_id = top_cand.player_id
-            nominator_valuation = top_cand.auction_values.your_dollar if top_cand.auction_values else 0.0
-        else:
-            avail_pool = [p for p in session.agent.default_h_scores.index if p not in all_rostered]
-            if not avail_pool:
-                raise ValueError('No available candidates left to nominate in the player pool.')
-            nominated_player_id = avail_pool[0]
-            nominator_valuation = 1.0
-
-        if nominated_player_id in session.player_registry:
-            nominated_player_name = session.player_registry[nominated_player_id].name
-        else:
-            nominated_player_name = str(nominated_player_id)
-    else:
-        if nominated_player_id in all_rostered:
-            raise ValueError(f'Player {nominated_player_id} is already rostered.')
-        if nominated_player_id in session.player_registry:
-            nominated_player_name = session.player_registry[nominated_player_id].name
-        else:
-            nominated_player_name = str(nominated_player_id)
-
-
-    # Max allowable bid for each team: remaining_cash - (empty_slots - 1)
-    max_allowed_bids: dict[str, int] = {}
-    for team, roster in player_assignments.items():
-        empty_slots = total_roster_picks - len(roster)
-        team_cash = remaining_cash.get(team, 0.0)
-        if empty_slots <= 0 or team_cash < 1.0:
-            max_allowed_bids[team] = 0
-        else:
-            max_allowed_bids[team] = max(0, int(team_cash - (empty_slots - 1)))
-
-    nom_max_allowed = max_allowed_bids.get(nominator_id, 0)
-    if nom_max_allowed < 1:
-        raise ValueError(f'Nominator {nominator_id} has insufficient budget or slots to open a bid.')
-
-    # Starting bid:
-    # "If they were nominated by an autodrafter, that starting price should always be 1."
-    if nominator_id in autodrafter_team_ids:
-        opening_bid = 1
-    elif nominator_id in manual_bids:
-        user_bid = int(round(manual_bids[nominator_id]))
-        opening_bid = max(1, min(user_bid, nom_max_allowed))
-    else:
-        opening_bid = 1
-
-    # Determine valuations and bid ceilings for all teams
-    valuations: dict[str, float] = {}
-    limits: dict[str, int] = {}
-
-    for team in player_assignments.keys():
-        max_allowed = max_allowed_bids.get(team, 0)
-        if max_allowed < 1:
-            valuations[team] = 0.0
-            limits[team] = 0
-            continue
-
-        if team in autodrafter_team_ids:
-            if team == nominator_id and nominator_valuation is not None:
-                val = nominator_valuation
-            elif len(player_assignments[team]) >= total_roster_picks:
-                val = 0.0
-            else:
-                team_res, _ = get_team_eval(team)
-                matched = next((c for c in team_res.candidates if c.player_id == nominated_player_id), None)
-                if matched and matched.auction_values:
-                    val = matched.auction_values.your_dollar
-                elif len(player_assignments[team]) < total_roster_picks and len(player_assignments[team]) >= n_active:
-                    val = 1.0
-                else:
-                    val = 0.0
-
-            val_rounded = round(float(val), 2)
-            valuations[team] = val_rounded
-            if val_rounded >= 1.0:
-                limits[team] = min(int(val_rounded), max_allowed)
-            else:
-                limits[team] = 0
-        elif team in manual_bids:
-            user_val = float(manual_bids[team])
-            valuations[team] = round(user_val, 2)
-            limits[team] = min(int(round(user_val)), max_allowed)
-        elif team == nominator_id:
-            valuations[team] = float(opening_bid)
-            limits[team] = opening_bid
-        else:
-            valuations[team] = 0.0
-            limits[team] = 0
-
-    # Incremental round-robin bidding in set order starting after nominator
-    team_order = list(player_assignments.keys())
-    nom_idx = team_order.index(nominator_id)
-    n_teams = len(team_order)
-
-    # Active bidders: teams that can bid and have not passed
-    active_bidders = {
-        t for t in team_order
-        if max_allowed_bids.get(t, 0) >= opening_bid
-    }
-    active_bidders.add(nominator_id)
-
-    current_bid = opening_bid
-    high_bidder = nominator_id
-
-    bids: dict[str, float] = {t: 0.0 for t in team_order}
-    bids[nominator_id] = float(opening_bid)
-    bid_history: list[dict[str, Any]] = [
-        {"team": nominator_id, "bid": float(opening_bid), "action": "nominate"}
-    ]
-
-    curr_idx = (nom_idx + 1) % n_teams
-    while len(active_bidders) > 1:
-        curr_team = team_order[curr_idx]
-
-        # If team has already passed on this player, skip their turn
-        if curr_team not in active_bidders:
-            curr_idx = (curr_idx + 1) % n_teams
-            continue
-
-        # If turn cycles back to the high bidder, all other active bidders have passed
-        if curr_team == high_bidder:
-            break
-
-        next_bid = current_bid + 1
-        team_limit = limits.get(curr_team, 0)
-        team_max = max_allowed_bids.get(curr_team, 0)
-
-        # Team will bid one more dollar if that would result in a valuable bid for them
-        if next_bid <= team_limit and next_bid <= team_max:
-            current_bid = next_bid
-            high_bidder = curr_team
-            bids[curr_team] = float(current_bid)
-            bid_history.append({"team": curr_team, "bid": float(current_bid), "action": "raise"})
-        else:
-            # Otherwise they must pass and can no longer bid on this player
-            active_bidders.remove(curr_team)
-            bid_history.append({"team": curr_team, "bid": float(current_bid), "action": "pass"})
-
-        curr_idx = (curr_idx + 1) % n_teams
-
-
-    return (
-        nominated_player_id,
-        nominated_player_name,
-        float(opening_bid),
-        bids,
-        valuations,
-        high_bidder,
-        float(current_bid),
-        bid_history,
-    )
-
 
 
 # ── errors ────────────────────────────────────────────────────────────────────

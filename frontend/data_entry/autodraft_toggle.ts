@@ -16,7 +16,6 @@ export function makeAutodraftToggle(
   , onChange: () => void
   , signal?: AbortSignal
   , isAuction: boolean = false
-  , isAuto?: (index: number) => boolean
 ): HTMLElement {
     const wrap = document.createElement('div')
     wrap.className = 'method-dd'
@@ -30,7 +29,7 @@ export function makeAutodraftToggle(
     button.textContent = 'A'
 
     function checkIsAuto(): boolean {
-        return isAuto ? isAuto(drafterIndex) : (getMethod(drafterIndex) !== 'Manual input')
+        return getMethod(drafterIndex) !== 'Manual input'
     }
 
     function refresh(): void {
@@ -49,7 +48,6 @@ export function makeAutodraftToggle(
         refresh()
         onChange()
     }, { signal })
-
 
     refresh()
     wrap.append(button)

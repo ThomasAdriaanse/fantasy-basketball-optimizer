@@ -5,7 +5,7 @@ in backend.models (this module imports from it, never the reverse).
 """
 
 from __future__ import annotations
-from typing import Optional, Any
+from typing import Optional
 from pydantic import BaseModel, Field, model_validator
 
 from backend.models import ComboParam
@@ -212,25 +212,34 @@ class EvaluateRequest(BaseModel):
 
 # ── /sessions/{id}/auction-autodraft ──────────────────────────────────────────
 
-class AuctionAutodraftRequest(BaseModel):
+class AuctionNominationRequest(BaseModel):
     player_assignments: dict[str, list[int]]
     remaining_cash: dict[str, float]
     nominator_id: str
-    nominated_player_id: Optional[int] = None
-    autodrafter_team_ids: list[str] = Field(default_factory=list)
-    manual_bids: dict[str, float] = Field(default_factory=dict)
+    # Both None: the nominator is an autodrafter and picks its own player, opening at $1.
+    # Both set: a manual nomination.
+    nominated_player_id: Optional[int]
+    opening_bid: Optional[int]
+    valuation_team_ids: list[str]
 
 
-class AuctionAutodraftResponse(BaseModel):
+class AuctionNominationResponse(BaseModel):
     nominated_player_id: int
     nominated_player_name: str
-    opening_bid: float
-    bids: dict[str, float]
+    opening_bid: int
     valuations: dict[str, float]
-    winner_id: str
-    winning_price: float
-    bid_history: Optional[list[dict[str, Any]]] = None
+    max_allowed_bids: dict[str, int]
 
+
+class AuctionValuationRequest(BaseModel):
+    player_assignments: dict[str, list[int]]
+    remaining_cash: dict[str, float]
+    player_id: int
+    valuation_team_ids: list[str]
+
+
+class AuctionValuationResponse(BaseModel):
+    valuations: dict[str, float]
 
 
 # ── /sessions/{id}/trade/analyze ─────────────────────────────────────────────

@@ -102,7 +102,7 @@ export function undoLastAuctionPick(): boolean {
     const last = history.pop()
     if (!last) return false
     picks[last[0]][last[1]] = null
-    nominatorIndex = last[2] ?? 0
+    nominatorIndex = last[2]
     return true
 }
 

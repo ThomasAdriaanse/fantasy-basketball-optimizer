@@ -289,39 +289,54 @@ export async function evaluate(
     })
 }
 
-// ── POST /sessions/{id}/auction-autodraft ─────────────────────────────────────
+// ── POST /sessions/{id}/auction-autodraft/* ───────────────────────────────────
 
-export interface AuctionAutodraftResult {
-    nominated_player_id: number
-    nominated_player_name: string
-    opening_bid: number
-    bids: Record<string, number>
-    valuations: Record<string, number>
-    winner_id: string
-    winning_price: number
-    bid_history?: Array<{ team: string; bid: number; action?: string }>
+export interface AuctionBoardRequest {
+    player_assignments: Record<string, number[]>
+    remaining_cash:     Record<string, number>
 }
 
+export interface AuctionNominationResult {
+    nominated_player_id:   number
+    nominated_player_name: string
+    opening_bid:           number
+    valuations:            Record<string, number>   // team -> dollar valuation, for the requested autodrafters
+    max_allowed_bids:      Record<string, number>   // team -> most it may bid, keeping $1 per other empty slot
+}
 
-/** Resolves an auction nomination and second-price auction bidding via the backend. */
-export async function auctionAutodraft(
+/** Opens bidding on a player. An autodrafter nominator sends nominated_player_id and opening_bid as null and
+ *  the backend picks its player, opening at $1; a manual nominator sends both. The browser runs the bidding. */
+export async function nominateAuctionPlayer(
     sessionId: string
-    , req: {
-        player_assignments: Record<string, number[]>
-        remaining_cash: Record<string, number>
-        nominator_id: string
-        nominated_player_id?: number | null
-        autodrafter_team_ids: string[]
-        manual_bids?: Record<string, number>
+    , request: AuctionBoardRequest & {
+        nominator_id:        string
+        nominated_player_id: number | null
+        opening_bid:         number | null
+        valuation_team_ids:  string[]
     }
-    , signal?: AbortSignal
-): Promise<AuctionAutodraftResult> {
-    return jsonRequest(`${BASE_URL}/sessions/${sessionId}/auction-autodraft`, 'Auction autodraft', {
+): Promise<AuctionNominationResult> {
+    return jsonRequest(`${BASE_URL}/sessions/${sessionId}/auction-autodraft/nominate`, 'Auction nomination', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(req),
-        signal,
+        body:    JSON.stringify(request),
     })
+}
+
+/** Valuations of a player already up for bid, for teams switched to autodraft mid-nomination. */
+export async function valueAuctionPlayer(
+    sessionId: string
+    , request: AuctionBoardRequest & {
+        player_id:          number
+        valuation_team_ids: string[]
+    }
+): Promise<Record<string, number>> {
+    const result = await jsonRequest<{ valuations: Record<string, number> }>(
+        `${BASE_URL}/sessions/${sessionId}/auction-autodraft/valuations`, 'Auction valuation', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify(request),
+        })
+    return result.valuations
 }
 
 // ── POST /sessions/{id}/trade/analyze ────────────────────────────────────────

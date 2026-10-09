@@ -19,38 +19,42 @@ import {
     getNominatorIndex, isAuctionComplete,
 } from './auction_state.js'
 import {
-    isAutopilotRunning,
-    getPendingNomination,
-    clearPendingNomination,
-    stopAuctionAutopilot,
-    fireAuctionAutopilot,
-    submitManualBid,
-    passManualBid,
-    nominateAndBidManual,
-    getCurrentSeatIndex,
-    isAuctionAutodrafter,
-    handleAuctionDrafterToggle,
+    AUCTION_AUTODRAFT_CHANGED,
     PendingNomination,
+    isAutopilotRunning, isAutopilotStopped, getAutodraftErrorMessage, getPendingNomination,
+    isNominationRequestInFlight, isAuctionAutodrafter, isAwaitingValuation, getCurrentSeatIndex,
+    resetAuctionAutodraft, cancelPendingNomination, stopAuctionAutopilot, continueAuctionAutopilot,
+    startAuctionAutopilotIfDue, submitManualBid, passManualBid, nominateManually, handleAuctionDrafterToggle,
 } from './auction_autodraft.js'
 
 // ─── Module state ─────────────────────────────────────────────────────────────
 
 const _auctionDebouncer = makeDebouncer(() => { runEvaluate().catch(err => console.error('Auction evaluate failed:', err)) })
 
+// Tracks the listeners attached by the most recent renderAuctionEntry call so
+// they can be detached before the next one. renderAuctionEntry is called on
+// every pick — without this, each rebuild would leave the previous pick-control
+// custom selects' internal listeners (~9 each × 2 selects) bound to detached
+// nodes. The closures keep the old wrapper DOM alive until the cycle is broken.
 let auctionListenerController: AbortController | null = null
 
-/** Total auction dollars a drafter has spent across the board's picks. */
+// The pick count the board last rendered, so an autodraft change re-evaluates only when it changed the board.
+let renderedHistoryLength = 0
+
+/** Total auction dollars a drafter has spent across the board's picks. The budget cap on
+ *  the cost input and the lock-in enforcement both read this, so they cannot disagree. */
 function sumSpentByDrafter(picks: ReturnType<typeof getPicks>, drafterIndex: number): number {
     return picks.reduce((sum, pickRow) => sum + (pickRow[drafterIndex]?.cost ?? 0), 0)
 }
 
-/** Maximum allowed single bid for a drafter according to league budget rules. */
+/** The most a drafter may bid while keeping $1 for every other empty roster slot; 0 with no empty slot.
+ *  Mirrors compute_max_allowed_bids in backend/services/auction_autodraft.py. */
 function maxBidForDrafter(drafterIndex: number): number {
     const picks = getPicks()
-    const spent = sumSpentByDrafter(picks, drafterIndex)
-    const remainingCash = getCashPerTeam() - spent
-    const emptySlots = picks.filter(r => r[drafterIndex] === null).length
-    return Math.max(1, remainingCash - Math.max(0, emptySlots - 1))
+    const emptySlots = picks.filter(pickRow => pickRow[drafterIndex] === null).length
+    if (emptySlots === 0) return 0
+    const remainingCash = getCashPerTeam() - sumSpentByDrafter(picks, drafterIndex)
+    return Math.max(0, Math.floor(remainingCash - (emptySlots - 1)))
 }
 
 const ROUND_W = 46   // fits the collapse arrow beside 'Round'
@@ -65,8 +69,7 @@ const TEAM_W  = 60
  */
 export function resetAuctionEntry(): void {
     resetAuctionState()
-    clearPendingNomination()
-    stopAuctionAutopilot()
+    resetAuctionAutodraft()
     _auctionDebouncer?.cancel()
 }
 
@@ -76,7 +79,7 @@ export function renderAuctionEntry(container: HTMLElement): void {
 
     if (cfg.key !== getConfigKey()) {
         applyAuctionConfig(cfg)
-        clearPendingNomination()
+        resetAuctionAutodraft()
     }
 
     // Detach listeners from the previous render's custom selects so their
@@ -84,22 +87,25 @@ export function renderAuctionEntry(container: HTMLElement): void {
     auctionListenerController?.abort()
     auctionListenerController = new AbortController()
 
+    // The autodraft module announces nominations, bids, picks, stops and errors; re-render on each, and
+    // re-evaluate when a pick was awarded or undone.
+    document.addEventListener(AUCTION_AUTODRAFT_CHANGED, () => {
+        const boardChanged = getHistory().length !== renderedHistoryLength
+        renderAuctionEntry(container)
+        if (boardChanged) _auctionDebouncer?.fire()
+    }, { signal: auctionListenerController.signal })
+    renderedHistoryLength = getHistory().length
+
     container.innerHTML = ''
     container.append(buildPickControl(container))
-    container.append(buildAuctionBoard(container))
+    container.append(buildAuctionBoard())
 
     // Notify layout that the board changed so the G-score tab can refresh
     container.dispatchEvent(new CustomEvent('auction-board-change', { bubbles: true }))
-    _auctionDebouncer?.fire()
 
-    // Trigger autopilot if current nominator is an autodrafter and auction is active
-    const nominator = getNominatorIndex()
-    const isAutoNominator = isAuctionAutodrafter(nominator)
-    if (isAutoNominator && !isAutopilotRunning() && !getPendingNomination() && !isAuctionComplete()) {
-        setTimeout(() => {
-            fireAuctionAutopilot(container, renderAuctionEntry)
-        }, 0)
-    }
+    // Hand over to the autopilot when an autodrafter is due to nominate (after this render returns, since
+    // the autopilot announces its start and that re-renders the board).
+    setTimeout(startAuctionAutopilotIfDue, 0)
 }
 
 // ─── Pick control ─────────────────────────────────────────────────────────────
@@ -113,21 +119,14 @@ function buildPickControl(container: HTMLElement): HTMLElement {
     const pending         = getPendingNomination()
     const running         = isAutopilotRunning()
     const nominator       = getNominatorIndex()
-    const nominatorLabel  = getTeamLabel(nominator)
     const isAutoNominator = isAuctionAutodrafter(nominator)
+    const errorMessage    = getAutodraftErrorMessage()
 
-    const statusLabel = document.createElement('div')
-    statusLabel.className = 'pick-control-label'
-    if (done) {
-        statusLabel.textContent = 'Auction complete'
-    } else if (pending) {
-        statusLabel.innerHTML = `<b>${getTeamLabel(pending.nominatorIndex)}</b> nominated <b>${pending.playerName}</b> - Current bid: <b>$${pending.currentBid}</b> by <b>${getTeamLabel(pending.highBidderIndex)}</b> (${pending.activeBidders.size} active bidders)`
-    } else if (running) {
-        statusLabel.textContent = `Running auction autopilot (${nominatorLabel} nominating)`
-    } else {
-        statusLabel.textContent = `Nomination: ${nominatorLabel}${isAutoNominator ? ' (Autodrafter)' : ''}`
+    wrap.append(buildAuctionStatusLabel(done, pending, running, nominator))
+
+    if (errorMessage !== null || (isAutopilotStopped() && !running)) {
+        wrap.append(buildAutopilotHaltRow(errorMessage))
     }
-    wrap.append(statusLabel)
 
     if (running) {
         const row = document.createElement('div')
@@ -155,91 +154,17 @@ function buildPickControl(container: HTMLElement): HTMLElement {
     }
 
     if (pending && !done) {
-        const row = document.createElement('div')
-        row.className = 'pick-control-row auction-bidding-row'
-
-        const turnDrafter = pending.turnIndex
-        const turnLabel = getTeamLabel(turnDrafter)
-        const userSeatIdx = getCurrentSeatIndex()
-        const isUserTurn = turnDrafter === userSeatIdx
-        const turnMaxBid = maxBidForDrafter(turnDrafter)
-        const nextMinBid = pending.currentBid + 1
-        const canAfford = turnMaxBid >= nextMinBid
-
-        const info = document.createElement('div')
-        info.className = 'auction-turn-indicator'
-        info.textContent = isUserTurn
-            ? `Your turn (${turnLabel}) to bid or pass`
-            : `${turnLabel}'s turn to bid or pass`
-        row.append(info)
-
-        // 1. Quick +1 button: "Bid $(currentBid + 1)"
-        const plusOneBtn = document.createElement('button')
-        plusOneBtn.className = 'pick-btn pick-btn-nominate'
-        plusOneBtn.textContent = `Bid $${nextMinBid}`
-        plusOneBtn.title = canAfford
-            ? `Increase current bid to $${nextMinBid} for ${turnLabel}`
-            : `${turnLabel} cannot afford next bid (max allowable bid is $${turnMaxBid})`
-        plusOneBtn.disabled = !canAfford
-        plusOneBtn.addEventListener('click', () => {
-            submitManualBid(container, renderAuctionEntry, nextMinBid, turnDrafter)
-        })
-
-        // 2. Custom bid input: for non-autobidders allowed to increase by more than 1
-        const customBidInput = document.createElement('input')
-        customBidInput.type        = 'number'
-        customBidInput.min         = String(nextMinBid)
-        customBidInput.max         = String(turnMaxBid)
-        customBidInput.placeholder = `$ (${nextMinBid} - ${turnMaxBid})`
-        customBidInput.className   = 'auction-bid-input'
-        customBidInput.disabled    = !canAfford
-
-        const customBidBtn = document.createElement('button')
-        customBidBtn.className = 'pick-btn'
-        customBidBtn.textContent = 'Bid custom'
-        customBidBtn.disabled = !canAfford
-        customBidBtn.addEventListener('click', () => {
-            const val = parseFloat(customBidInput.value)
-            if (isNaN(val) || val < nextMinBid || val > turnMaxBid) return
-            submitManualBid(container, renderAuctionEntry, Math.floor(val), turnDrafter)
-        })
-
-        const btns = document.createElement('div')
-        btns.className = 'pick-control-buttons'
-
-        // 3. Pass button: permanently drops this drafter out of bidding for this player
-        const passBtn = document.createElement('button')
-        passBtn.className   = 'pick-btn'
-        passBtn.textContent = 'Pass'
-        passBtn.title       = `Pass for ${turnLabel} and no longer bid on this player`
-        passBtn.disabled    = pending.highBidderIndex === turnDrafter
-        passBtn.addEventListener('click', () => {
-            passManualBid(container, renderAuctionEntry, turnDrafter)
-        })
-
-        // 4. Undo previous selection
-        const undoBtn = document.createElement('button')
-        undoBtn.className   = 'pick-btn'
-        undoBtn.textContent = 'Undo'
-        undoBtn.disabled    = getHistory().length === 0
-        undoBtn.addEventListener('click', () => {
-            clearPendingNomination()
-            const undone = undoLastAuctionPick()
-            if (undone) {
-                renderAuctionEntry(container)
-                _auctionDebouncer?.fire()
-            }
-        })
-
-        btns.append(passBtn, undoBtn)
-        row.append(plusOneBtn, customBidInput, customBidBtn, btns)
-        wrap.append(row)
+        wrap.append(buildBiddingRow(container, pending))
         return wrap
     }
 
     const row = document.createElement('div')
     row.className = 'pick-control-row'
 
+    // Player dropdown — grows to fill available space. Filter the FULL player pool by the
+    // board's own picks (like the draft board), not the last evaluate's candidate list: that
+    // list already excludes picked players, so after an undo it is stale and would leave the
+    // undone player missing from the dropdown until some later re-render.
     const currentPicks = getPicks()
     const pickedSet = new Set(currentPicks.flat().filter(Boolean).map(p => p!.playerId))
     const available = getPlayerResults()?.map(p => p.player_id).filter(playerId => !pickedSet.has(playerId)) ?? []
@@ -258,6 +183,9 @@ function buildPickControl(container: HTMLElement): HTMLElement {
     playerCol.style.flex = '1'
     row.append(playerCol)
 
+    // Drafter dropdown — before cost so the cap makes sense visually; full teams excluded.
+    // Option value is the team identity ("Team N", mapped back via indexOf on lock-in); the
+    // shown label is the editable display label.
     const listAvailableTeamOptions = () => [{ value: '', label: '' }, ...getTeamIdentitiesFromBoard()
         .map((name, index) => ({ value: name, label: getTeamLabel(index), index }))
         .filter(({ index }) => currentPicks.some(pickRow => pickRow[index] === null))
@@ -270,12 +198,15 @@ function buildPickControl(container: HTMLElement): HTMLElement {
         auctionListenerController?.signal,
     )
     teamSel.element.style.width = '100%'
+    // Renaming a team in its header does not rebuild this row (it is rebuilt on picks), so the options would keep the
+    // old name. Relabelled in place, keeping the chosen drafter: values are identities, which a rename leaves alone.
     document.addEventListener(TEAM_LABELS_CHANGED, () => teamSel.setOptions(listAvailableTeamOptions()),
                               { signal: auctionListenerController?.signal })
     const teamCol = makePickCol('Drafter', teamSel.element)
     teamCol.style.flex = '1'
     row.append(teamCol)
 
+    // Cost input — capped to the selected drafter's maximum allowable bid
     const costInput = document.createElement('input')
     costInput.type        = 'number'
     costInput.min         = '1'
@@ -313,17 +244,18 @@ function buildPickControl(container: HTMLElement): HTMLElement {
             const nominateBtn = document.createElement('button')
             nominateBtn.className   = 'pick-btn pick-btn-nominate'
             nominateBtn.textContent = 'Nominate & Bid'
-            nominateBtn.title       = 'Nominate this player with opening bid'
+            nominateBtn.disabled    = isAutoNominator || isNominationRequestInFlight()
+            nominateBtn.title       = isAutoNominator
+                ? `${getTeamLabel(nominator)} is an autodrafter and nominates on its own`
+                : `Nominate this player for ${getTeamLabel(nominator)}, opening at the cost entered ($1 if blank)`
 
             nominateBtn.addEventListener('click', () => {
                 const chosen = playerSel.getValue()
                 if (!chosen) return
                 const chosenPlayerId = Number(chosen)
-                if (Number.isNaN(chosenPlayerId)) return
-                const costVal = parseFloat(costInput.value)
-                const userMax = maxBidForDrafter(nominator)
-                const userBid = (!isNaN(costVal) && costVal >= 1) ? Math.min(Math.floor(costVal), userMax) : 1
-                nominateAndBidManual(container, renderAuctionEntry, chosenPlayerId, userBid)
+                if (Number.isNaN(chosenPlayerId)) throw new Error(`Auction pick select carried a non-numeric value: "${chosen}"`)
+                const openingBid = costInput.value === '' ? 1 : Number(costInput.value)
+                void nominateManually(chosenPlayerId, openingBid)
             })
             btns.append(nominateBtn)
         }
@@ -357,7 +289,6 @@ function buildPickControl(container: HTMLElement): HTMLElement {
     undoBtn.textContent = 'Undo previous selection'
     undoBtn.disabled    = getHistory().length === 0
     undoBtn.addEventListener('click', () => {
-        clearPendingNomination()
         const undone = undoLastAuctionPick()
         if (undone) {
             renderAuctionEntry(container)
@@ -369,8 +300,7 @@ function buildPickControl(container: HTMLElement): HTMLElement {
     clearBtn.className   = 'pick-btn'
     clearBtn.textContent = 'Clear auction board'
     clearBtn.addEventListener('click', () => {
-        clearPendingNomination()
-        stopAuctionAutopilot()
+        resetAuctionAutodraft()
         const cleared = clearAllAuctionPicks()
         if (cleared) {
             renderAuctionEntry(container)
@@ -384,6 +314,152 @@ function buildPickControl(container: HTMLElement): HTMLElement {
     return wrap
 }
 
+/** The one-line auction status above the pick control. Built from text nodes, not HTML, since
+ *  player and team names are data. */
+function buildAuctionStatusLabel(
+    done: boolean
+    , pending: PendingNomination | null
+    , running: boolean
+    , nominator: number
+): HTMLElement {
+    const statusLabel = document.createElement('div')
+    statusLabel.className = 'pick-control-label'
+    const appendBold = (text: string) => {
+        const bold = document.createElement('b')
+        bold.textContent = text
+        statusLabel.append(bold)
+    }
+    if (done) {
+        statusLabel.textContent = 'Auction complete'
+    } else if (pending) {
+        appendBold(getTeamLabel(pending.nominatorIndex))
+        statusLabel.append(' nominated ')
+        appendBold(pending.playerName)
+        statusLabel.append(' - Current bid: ')
+        appendBold(`$${pending.currentBid}`)
+        statusLabel.append(' by ')
+        appendBold(getTeamLabel(pending.highBidderIndex))
+        statusLabel.append(` (${pending.activeBidders.size} active bidders)`)
+    } else if (running) {
+        statusLabel.textContent = `Running auction autopilot (${getTeamLabel(nominator)} nominating)`
+    } else if (isNominationRequestInFlight()) {
+        statusLabel.textContent = `Opening the bidding for ${getTeamLabel(nominator)}...`
+    } else {
+        statusLabel.textContent = `Nomination: ${getTeamLabel(nominator)}${isAuctionAutodrafter(nominator) ? ' (Autodrafter)' : ''}`
+    }
+    return statusLabel
+}
+
+/** Shown while the autopilot is stopped or a failure is unresolved: the reason, and a button to carry on. */
+function buildAutopilotHaltRow(errorMessage: string | null): HTMLElement {
+    const row = document.createElement('div')
+    row.className = 'auction-autodraft-halt'
+    row.classList.toggle('is-error', errorMessage !== null)
+
+    const message = document.createElement('span')
+    message.textContent = errorMessage ?? 'Autopilot stopped.'
+    row.append(message)
+
+    const continueBtn = document.createElement('button')
+    continueBtn.className   = 'pick-btn'
+    continueBtn.textContent = 'Continue'
+    continueBtn.title       = 'Clear this message and resume the auction'
+    continueBtn.addEventListener('click', () => continueAuctionAutopilot())
+    row.append(continueBtn)
+    return row
+}
+
+/** The bidding controls for the drafter whose turn it is on the player up for bid. */
+function buildBiddingRow(
+    container: HTMLElement
+    , pending: PendingNomination
+): HTMLElement {
+    const row = document.createElement('div')
+    row.className = 'pick-control-row auction-bidding-row'
+
+    const turnDrafter = pending.turnIndex
+    const turnLabel   = getTeamLabel(turnDrafter)
+    const info = document.createElement('div')
+    info.className = 'auction-turn-indicator'
+    row.append(info)
+
+    const btns = document.createElement('div')
+    btns.className = 'pick-control-buttons'
+
+    if (isAwaitingValuation(turnDrafter)) {
+        info.textContent = `Fetching ${turnLabel}'s valuation of ${pending.playerName}...`
+    } else {
+        const turnMaxBid = pending.maxAllowedBids[turnDrafter]
+        const nextMinBid = pending.currentBid + 1
+        const canAfford  = turnMaxBid >= nextMinBid
+
+        info.textContent = turnDrafter === getCurrentSeatIndex()
+            ? `Your turn (${turnLabel}) to bid or pass`
+            : `${turnLabel}'s turn to bid or pass`
+
+        // 1. Quick +1 button: "Bid $(currentBid + 1)"
+        const plusOneBtn = document.createElement('button')
+        plusOneBtn.className   = 'pick-btn pick-btn-nominate'
+        plusOneBtn.textContent = `Bid $${nextMinBid}`
+        plusOneBtn.title = canAfford
+            ? `Increase current bid to $${nextMinBid} for ${turnLabel}`
+            : `${turnLabel} cannot afford next bid (max allowable bid is $${turnMaxBid})`
+        plusOneBtn.disabled = !canAfford
+        plusOneBtn.addEventListener('click', () => submitManualBid(nextMinBid, turnDrafter))
+
+        // 2. Custom bid input: manual drafters may raise by more than $1
+        const customBidInput = document.createElement('input')
+        customBidInput.type        = 'number'
+        customBidInput.min         = String(nextMinBid)
+        customBidInput.max         = String(turnMaxBid)
+        customBidInput.step        = '1'
+        customBidInput.placeholder = `$ (${nextMinBid} - ${turnMaxBid})`
+        customBidInput.className   = 'auction-bid-input'
+        customBidInput.disabled    = !canAfford
+
+        const customBidBtn = document.createElement('button')
+        customBidBtn.className   = 'pick-btn'
+        customBidBtn.textContent = 'Bid custom'
+        customBidBtn.disabled    = !canAfford
+        customBidBtn.addEventListener('click', () => submitManualBid(Number(customBidInput.value), turnDrafter))
+
+        // 3. Pass button: permanently drops this drafter out of bidding for this player
+        const passBtn = document.createElement('button')
+        passBtn.className   = 'pick-btn'
+        passBtn.textContent = 'Pass'
+        passBtn.title       = `Pass for ${turnLabel} and no longer bid on this player`
+        passBtn.addEventListener('click', () => passManualBid(turnDrafter))
+
+        row.append(plusOneBtn, customBidInput, customBidBtn)
+        btns.append(passBtn)
+    }
+
+    // 4. Cancel the nomination without awarding the player
+    const cancelBtn = document.createElement('button')
+    cancelBtn.className   = 'pick-btn'
+    cancelBtn.textContent = 'Cancel nomination'
+    cancelBtn.title       = `Take ${pending.playerName} off the block without awarding him`
+    cancelBtn.addEventListener('click', () => cancelPendingNomination())
+
+    // 5. Undo previous selection (also cancels the nomination)
+    const undoBtn = document.createElement('button')
+    undoBtn.className   = 'pick-btn'
+    undoBtn.textContent = 'Undo previous selection'
+    undoBtn.disabled    = getHistory().length === 0
+    undoBtn.addEventListener('click', () => {
+        cancelPendingNomination()
+        const undone = undoLastAuctionPick()
+        if (undone) {
+            renderAuctionEntry(container)
+            _auctionDebouncer?.fire()
+        }
+    })
+
+    btns.append(cancelBtn, undoBtn)
+    row.append(btns)
+    return row
+}
+
 // ─── Auction board table ──────────────────────────────────────────────────────
 
 /**
@@ -395,9 +471,8 @@ function buildPickControl(container: HTMLElement): HTMLElement {
  * - '-' or 'Nominating' when no nomination is active
  */
 function buildTeamAuctionStatus(
-    drafterIndex: number,
-    pending: PendingNomination | null,
-    container: HTMLElement
+    drafterIndex: number
+    , pending: PendingNomination | null
 ): HTMLElement {
     const badge = document.createElement('div')
     badge.className = 'auction-team-bid-status'
@@ -445,11 +520,11 @@ function buildTeamAuctionStatus(
     }
 
     // If it is this manual drafter's turn to act, clicking their status badge also acts as Pass
-    if (isTurn) {
+    if (isTurn && !isAuctionAutodrafter(drafterIndex)) {
         badge.style.cursor = 'pointer'
         badge.title = `Click to pass for ${getTeamLabel(drafterIndex)}`
         badge.addEventListener('click', () => {
-            passManualBid(container, renderAuctionEntry, drafterIndex)
+            passManualBid(drafterIndex)
         })
     }
 
@@ -457,7 +532,7 @@ function buildTeamAuctionStatus(
 }
 
 /** Builds the auction board grid: rounds × drafters with player names, costs, and remaining budget footer. */
-function buildAuctionBoard(container: HTMLElement): HTMLElement {
+function buildAuctionBoard(): HTMLElement {
     const scroll = document.createElement('div')
     scroll.className = 'entry-table-scroll'
 
@@ -474,19 +549,16 @@ function buildAuctionBoard(container: HTMLElement): HTMLElement {
         cellWrap.className = 'auction-team-header-wrap'
 
         // UI above team: current bid, if passed, or if not bid yet
-        cellWrap.append(buildTeamAuctionStatus(d, pending, container))
+        cellWrap.append(buildTeamAuctionStatus(d, pending))
 
         const headerWrap = document.createElement('div')
         headerWrap.className = 'team-header'
         headerWrap.append(makeTeamLabelInput(d, auctionListenerController?.signal))
         headerWrap.append(makeAutodraftToggle(
-            d,
-            () => {
-                handleAuctionDrafterToggle(d, container, renderAuctionEntry)
-            },
-            auctionListenerController?.signal,
-            true,
-            isAuctionAutodrafter,
+            d
+            , () => handleAuctionDrafterToggle(d)
+            , auctionListenerController?.signal
+            , true
         ))
         cellWrap.append(headerWrap)
         return cellWrap
