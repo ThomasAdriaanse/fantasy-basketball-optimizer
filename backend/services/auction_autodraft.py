@@ -162,7 +162,9 @@ def value_player_for_team(
     , evaluations: dict[str, EvaluateResponse]
 ) -> float:
     """A team's dollar valuation of a player: its "Your $" for that player while it has active slots to
-    fill, $1 once only perma-bench slots remain, and $0 once its roster is full."""
+    fill, $1 once only perma-bench slots remain, and $0 once its roster is full. A pool player the team's
+    evaluate leaves out is one whose positions fit none of its open active slots (_build_candidates drops
+    those); the team cannot roster him, so he is worth $0 to it, exactly as the H-score table omits him."""
     roster_size = len(player_assignments[team])
     if roster_size >= session.current_settings['n_picks']:
         return 0.0
@@ -171,6 +173,8 @@ def value_player_for_team(
     candidates = evaluate_team(session, player_assignments, remaining_cash, team, evaluations).candidates
     matched = next((candidate for candidate in candidates if candidate.player_id == player_id), None)
     if matched is None:
+        if is_in_scored_pool(session, player_id):
+            return 0.0
         raise ValueError(f'Player {player_id} is not in the scored player pool, so {team} cannot value him.')
     if matched.auction_values is None:
         raise ValueError(f'The auction evaluate for {team} returned no dollar values.')
@@ -220,6 +224,18 @@ def validate_nominee_available(
 ) -> None:
     if any(player_id in roster for roster in player_assignments.values()):
         raise ValueError(f'Player {player_id} is already rostered.')
+
+
+def is_in_scored_pool(
+    session: Session
+    , player_id: int
+) -> bool:
+    """Whether the evaluate scores this player at all: the same membership test get_h_scores applies to
+    its available pool (projected, with a position row, and not the replacement placeholder)."""
+    agent = session.agent
+    return (player_id != RP_PLAYER_ID
+            and player_id in agent.x_scores.index
+            and player_id in agent.positions.index)
 
 
 def read_player_name(
