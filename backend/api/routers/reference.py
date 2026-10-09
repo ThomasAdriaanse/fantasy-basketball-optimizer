@@ -14,7 +14,7 @@ from backend.parameters import load_all_params
 from backend.api.helpers import fail
 from backend.data_retrieval import get_available_seasons
 from backend.infra.headshot_cache import HeadshotFetchError, get_headshot
-from backend.infra.snowflake_connection import peek
+from backend.infra.database_connection import peek
 
 router = APIRouter()
 

@@ -20,7 +20,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from backend.infra.snowflake_connection import query, run_query
+from backend.infra.database_connection import query, run_query
 # One-way edge: player_identity deliberately imports nothing from this module (the resolver
 # takes the unified table as an argument), so these module-level imports cannot cycle.
 from backend.player_identity import allocate_synthetic_player_ids
