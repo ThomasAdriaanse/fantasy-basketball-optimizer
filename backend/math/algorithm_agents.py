@@ -1206,7 +1206,7 @@ class HAgent:
                     # order, so results are bit-identical): get_diff_means_auction at roster_len=1,
                     # then the confidence-scaled punt tilt.
                     score_diff        = x_self_sum.reshape(1, -1) - anchor_stats
-                    player_diff_total = (len(my_players) - 1 - 1) * replacement_value_by_category.reshape(1, -1)
+                    player_diff_total = (len(my_players) + 1 - 1) * replacement_value_by_category.reshape(1, -1)
                     money_diff_total  = batch_cash.reshape(-1, 1) * np.asarray(category_value_per_dollar).reshape(1, -1)
                     tilt              = (self.n_picks - 1) * prior_confidence * anchor_tilts
                     columns           = score_diff - player_diff_total + money_diff_total - tilt
@@ -1885,7 +1885,7 @@ class HAgent:
                                 , player_diff
                                 , category_value_per_dollar
                                 , replacement_value_by_category):
-        player_diff_total = ((player_diff - 1) * replacement_value_by_category).reshape(1, self.n_categories, 1)
+        player_diff_total = ((player_diff + 1) * replacement_value_by_category).reshape(1, self.n_categories, 1)
         money_diff_total  = (money_diff * category_value_per_dollar).reshape(1, self.n_categories, 1)
         return score_diff - player_diff_total + money_diff_total
 
