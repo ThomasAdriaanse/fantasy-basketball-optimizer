@@ -12,7 +12,6 @@ dollar value the UI shows for that team.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -20,6 +19,7 @@ from backend.state.session import Session
 from backend.models import EvaluateResponse
 from backend.player_identity import FULL_ROSTER_SCORE_PLAYER_ID, RP_PLAYER_ID
 from backend.services.ranking import rank_candidates, UnknownTeamError
+from backend.services.auction_pricing import compute_max_allowed_bids
 
 
 @dataclass
@@ -113,23 +113,6 @@ def value_auction_player(
 
 
 # ── Rules ─────────────────────────────────────────────────────────────────────
-
-def compute_max_allowed_bids(
-    player_assignments: dict[str, list[int]]
-    , remaining_cash: dict[str, float]
-    , total_roster_picks: int
-) -> dict[str, int]:
-    """The most each team may bid while keeping $1 for every other empty roster slot (bench included).
-    A team with no empty slot cannot bid at all."""
-    max_allowed_bids: dict[str, int] = {}
-    for team, roster in player_assignments.items():
-        empty_slots = total_roster_picks - len(roster)
-        if empty_slots <= 0:
-            max_allowed_bids[team] = 0
-        else:
-            max_allowed_bids[team] = max(0, math.floor(remaining_cash[team] - (empty_slots - 1)))
-    return max_allowed_bids
-
 
 def select_autodrafter_nominee(
     session: Session

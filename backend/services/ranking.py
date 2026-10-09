@@ -15,6 +15,7 @@ from backend.models import (
     Roster, RosterAssignment, AuctionValues, EvaluateResponse,
 )
 from backend.math.algorithm_helpers import auction_value_adjuster
+from backend.services.auction_pricing import add_unusable_cash_shares
 from backend.player_identity import FULL_ROSTER_SCORE_PLAYER_ID
 from backend.infra.server_timing import record_phase
 from backend.services.build_agent import count_unscorable_players_as_replacement, derive_effective_objective
@@ -108,7 +109,9 @@ def rank_candidates(
         )
 
     # Perma-bench: each team's picks past its active slots are bench, not scored (split_off_bench); they stay
-    # unavailable as candidates, since they are on a roster all the same.
+    # unavailable as candidates, since they are on a roster all the same. Auction pricing still needs the
+    # whole roster's size: bench slots hold back $1 each.
+    team_roster_size = len(player_assignments[my_team_id])
     player_assignments, benched_players = split_off_bench(player_assignments, h_agent.n_picks)
     exclusion_list = list(exclusion_list) + benched_players
 
@@ -165,6 +168,7 @@ def rank_candidates(
             player_registry,
             remaining_cash,
             generic_h_scores=session.agent.default_h_scores,
+            team_roster_size=team_roster_size,
         )
 
     return EvaluateResponse(
@@ -187,6 +191,7 @@ def _build_candidates(
     player_registry: dict,
     remaining_cash: Optional[dict[str, float]] = None,
     generic_h_scores: Optional[pd.Series] = None,
+    team_roster_size: Optional[int] = None,
 ) -> list[Candidate]:
     """Convert a raw HAgent result dict into a list of ranked Candidate objects.
 
@@ -336,6 +341,17 @@ def _build_candidates(
             # your_dollar: team-specific H-scores, current state (remaining cash + picks)
             your_dollar_series = auction_value_adjuster(
                 h_scores_sorted, n_remaining, total_cash_remaining, streaming_noise,
+            )
+            # ...plus each player's share of the cash this team could not otherwise use, so a team holding
+            # more than its open slots can spend bids it down (auction_cash_pacing_plan.md, Change 1).
+            if team_roster_size is None:
+                raise ValueError('Auction pricing needs the team\'s roster size including bench.')
+            your_dollar_series = add_unusable_cash_shares(
+                your_dollar_series = your_dollar_series,
+                rosterable_players = player_fits_roster.index[player_fits_roster.to_numpy()],
+                team_cash          = remaining_cash[my_team_id],
+                open_active_slots  = h_agent.n_picks - len(my_players),
+                empty_roster_slots = current_settings['n_picks'] - team_roster_size,
             )
             # original_dollar: neutral baseline H-scores, full original cash/picks
             original_dollar_series = auction_value_adjuster(

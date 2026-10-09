@@ -1,7 +1,9 @@
 # Auction cash pacing plan
 
 Branch: `auction-cash-pacing` (from `auction-auto-draft`)
-Status: agreed with Thomas 2026-10-09. Step 1 (simulation script) written; baseline run pending.
+Status: agreed with Thomas 2026-10-09. Simulation script written. Change 1 implemented
+(`backend/services/auction_pricing.py`); awaiting Thomas's test. Baseline from his browser run on the
+unchanged code: three teams ended with $22, $8 and $5 unspent.
 
 ## 1. Problem
 
@@ -48,7 +50,10 @@ For team `t` pricing candidate `X`:
    `value(X) / (value(X) + cap)`. With similar players this is close to an even split over the slots; a
    star gets more than a filler player; on the last open slot (`s = 0`, cap 0) the share is the whole
    surplus, so nothing is left over at the end.
-4. **New "Your $"** = today's "Your $" + `X`'s share of the surplus, never above `t`'s maximum
+4. **Who takes a share.** Only players among `t`'s best options, one per open active slot: the players
+   it would fill its slots with. Otherwise, on the last slot every player would carry the whole surplus
+   and `t` would spend it on whoever was nominated first.
+5. **New "Your $"** = today's "Your $" + `X`'s share of the surplus, never above `t`'s maximum
    allowable bid.
 
 Worked example (made-up numbers): Team A has $120 and 6 open slots. After buying X it has 5; its 5 best
@@ -65,7 +70,11 @@ Properties:
   "Your $" raises how far a team will go rather than what it pays.
 - No extra evaluates: it uses the "Your $" values the evaluate already produces.
 
-Known approximation: each "Your $" values a player as the team's next purchase (current roster plus
+Known limits. The cap assumes `t` could buy each of its best options at what he is worth to it; in
+practice it loses some to rivals who value them more and pays the runner-up's limit for the rest, so the
+surplus appears later than it should (Thomas's observation from the baseline run). If cash is still left
+over, the follow-up is a competition-aware cap built from rivals' valuations (from every team's evaluate,
+or estimated by the opponent model). Separately, each "Your $" values a player as the team's next purchase (current roster plus
 him), so the sum in the cap does not account for players overlapping or complementing each other once
 several are bought. The simulation shows whether the cap is far enough off to matter; if it is, the
 follow-up is to value the other players under the category weights the optimiser chose for `X`.
