@@ -71,6 +71,8 @@ For 'Gnrc. $' value, the underlying step 1 estimates are not changed, but the st
 
 For 'Your $', both step 1 and step 2 are re-run based on auction context for the manager in question. It is the only valuation that takes context, like the team's punt build, into consideration. 
 
+'Your $' also accounts for money the manager could not otherwise spend. The manager's best options are their top players by 'Your $', one for each open roster slot. If those players cost less than the manager's remaining cash (keeping $1 for each empty bench slot), the difference is split evenly among them. E.g. a manager with $60 and two open slots, whose best options are worth $20 and $10, has $30 to spare, so those players become $35 and $25. Without this, a manager holding more money than their remaining slots can absorb would never bid it and would finish the auction with money left over. 'Your $' never exceeds the most the manager is allowed to bid, which keeps $1 for every other empty slot. 
+
 The difference between 'Your $' and 'Gnrc. $', the 'Diff.' column,  highlights players which are more or less valuable to the drafter in question than they are to a generic drafter. Players with high values for 'Diff.' are likely sensible targets, while players with low values are anti-synergistic. 
 
 **The long and short of it is: 'Your $' is a reasonable benchmark for what you should be willing to pay for a player. 'Diff.' highlights players that are particularly good for your team. 'Orig. $' is a context-agnostic benchmark of what constitutes a good deal for the player**
