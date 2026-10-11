@@ -166,9 +166,9 @@ def rank_candidates(
         candidates = _build_candidates(
             h_score_result, h_agent, categories, player_assignments, my_team_id, current_settings,
             player_registry,
+            team_roster_size,
             remaining_cash,
             generic_h_scores=session.agent.default_h_scores,
-            team_roster_size=team_roster_size,
         )
 
     return EvaluateResponse(
@@ -189,9 +189,9 @@ def _build_candidates(
     my_team_id: str,
     current_settings: dict,
     player_registry: dict,
+    team_roster_size: int,
     remaining_cash: Optional[dict[str, float]] = None,
     generic_h_scores: Optional[pd.Series] = None,
-    team_roster_size: Optional[int] = None,
 ) -> list[Candidate]:
     """Convert a raw HAgent result dict into a list of ranked Candidate objects.
 
@@ -207,6 +207,8 @@ def _build_candidates(
         player_assignments: Current draft/auction state (team → player list).
         my_team_id:     The user's team identifier.
         current_settings: Session parameters dict (contains slot_counts, etc.).
+        team_roster_size: Players on my_team_id's roster, bench included (auction pricing holds $1 per
+                        empty bench slot).
         remaining_cash: Per-team auction budget remaining; None in draft mode.
 
     Returns:
@@ -296,7 +298,9 @@ def _build_candidates(
     # Computed once for all players before the loop; None in draft mode.
     #
     # Three values per player:
-    #   your_dollar — SAVOR on H-scores (team-specific, uses remaining cash)
+    #   your_dollar — SAVOR on H-scores (team-specific, uses remaining cash), plus an even share of the cash
+    #                 the team could not otherwise spend on its best options (add_unusable_cash_shares), capped
+    #                 at the most the team may bid
     #   original_dollar — SAVOR on generic H-scores (no players taken), original full cash/picks
     #   generic_dollar — original_dollar restricted to the AVAILABLE players and rescaled so it sums to the
     #                 current remaining cash. Not an independent SAVOR run: re-running SAVOR on the
@@ -304,7 +308,8 @@ def _build_candidates(
     #                 cash, so the available players' values no longer exhaust the budget (and Diff
     #                 drifts systematically positive). Every dollar column must sum to its budget:
     #                 your$/gnrc$ to the remaining cash over available players, orig$ to the original
-    #                 cash over the full pool.
+    #                 cash over the full pool. The one exception is your$'s unusable-cash share: it is this
+    #                 team's own spare money, so it moves your$ (and Diff) for the team's best options only.
     #
     # n_remaining is the number of players still to be drafted across all teams.
     # The SAVOR function uses this to find the replacement-level player (the
@@ -342,10 +347,8 @@ def _build_candidates(
             your_dollar_series = auction_value_adjuster(
                 h_scores_sorted, n_remaining, total_cash_remaining, streaming_noise,
             )
-            # ...plus each player's share of the cash this team could not otherwise use, so a team holding
+            # ...plus each best option's share of the cash this team could not otherwise use, so a team holding
             # more than its open slots can spend bids it down (backend/services/auction_pricing.py).
-            if team_roster_size is None:
-                raise ValueError('Auction pricing needs the team\'s roster size including bench.')
             your_dollar_series = add_unusable_cash_shares(
                 your_dollar_series = your_dollar_series,
                 rosterable_players = player_fits_roster.index[player_fits_roster.to_numpy()],

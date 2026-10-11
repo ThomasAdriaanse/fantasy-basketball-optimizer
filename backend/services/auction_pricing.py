@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
 import pandas as pd
 
 
@@ -34,19 +33,18 @@ def add_unusable_cash_shares(
     , open_active_slots: int
     , empty_roster_slots: int
 ) -> pd.Series:
-    """Each player's "Your $" plus his share of the cash the team could not otherwise use, capped at the
+    """Each player's "Your $" plus an even share of the cash the team could not otherwise use, capped at the
     team's maximum allowable bid.
 
-    For a candidate X:
-      - spending cap: the team's own "Your $" for its best other rosterable players, one per active slot it
-        would still have open after buying X (each counted at no less than the $1 minimum bid). It is the
-        most the team could usefully spend after X, valuing each player as its next purchase;
-      - surplus: cash beyond that cap and beyond $1 for each empty bench slot left after X;
-      - share: value(X) / (value(X) + cap), so a star takes more of the surplus than a filler player, and on
-        the last open active slot (cap 0) the share is the whole surplus;
-      - only a player among the team's best options, one per open active slot, takes a share: those are the
-        players it would fill its slots with. Without this, on the last slot every player would carry the
-        whole surplus and the team would spend it on whoever happened to be nominated first.
+      - the team's best options: its top rosterable players by "Your $", one per open active slot. They are
+        the players it would fill its slots with;
+      - surplus: the team's cash, minus what those players cost (each at no less than the $1 minimum bid),
+        minus $1 for each empty bench slot;
+      - each of those players gets surplus / (number of them) added; everyone else is unchanged.
+
+    Example: $60, two open active slots, players worth $20, $10 and $5. The best options cost $30, so the
+    surplus is $30 and the first two become $35 and $25, which together spend the team's cash. A team whose
+    best options already cost all its cash has no surplus and nothing changes.
 
     your_dollar_series covers the available pool; rosterable_players are those whose positions fit one of
     the team's open active slots (the candidates the table shows)."""
@@ -56,22 +54,11 @@ def add_unusable_cash_shares(
         raise ValueError(f'The team has {empty_roster_slots} empty roster slots but {open_active_slots} open '
                          f'active slots; active slots are part of the roster.')
 
-    slots_after_purchase = open_active_slots - 1
-    bench_reserve        = empty_roster_slots - 1 - slots_after_purchase
-    values               = your_dollar_series.clip(lower=0.0)
+    bench_reserve = empty_roster_slots - open_active_slots
+    best_options  = your_dollar_series.loc[rosterable_players].sort_values(ascending=False).iloc[:open_active_slots]
+    surplus       = max(0.0, team_cash - best_options.clip(lower=1.0).sum() - bench_reserve)
 
-    slot_costs        = values.loc[rosterable_players].clip(lower=1.0).sort_values(ascending=False)
-    best_costs        = slot_costs.iloc[:slots_after_purchase + 1]
-    cap_without_swap  = best_costs.iloc[:slots_after_purchase].sum()
-    # A candidate who is himself among the best `slots_after_purchase` is replaced in his own cap by the
-    # next-best player.
-    in_best = values.index.isin(best_costs.index[:slots_after_purchase])
-    caps = pd.Series(cap_without_swap, index=values.index)
-    caps[in_best] = best_costs.sum() - slot_costs.loc[values.index[in_best]].to_numpy()
-
-    surplus = (team_cash - bench_reserve - caps).clip(lower=0.0)
-    takes_share = values.index.isin(slot_costs.index[:open_active_slots]) & (values > 0).to_numpy()
-    shares  = pd.Series(np.where(takes_share, values / (values + caps).where(takes_share, 1.0), 0.0),
-                        index=values.index)
-    adjusted = your_dollar_series + shares * surplus
+    adjusted = your_dollar_series.copy()
+    if len(best_options) > 0:
+        adjusted.loc[best_options.index] += surplus / len(best_options)
     return adjusted.clip(upper=compute_max_allowed_bid(team_cash, empty_roster_slots))
